@@ -1,0 +1,48 @@
+{
+  "name": "compelem-store",
+  "version": "0.1.0",
+  "description": "A store for CompElem",
+  "author": "holyhigh2",
+  "type": "module",
+  "main": "dist/index.umd.cjs",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.umd.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview",
+    "test": "vitest run"
+  },
+  "keywords": [
+    "compelem",
+    "store",
+    "state-management",
+    "web-components"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "compelem": ">=0.27.0",
+    "myfx": "^1.15.11"
+  },
+  "devDependencies": {
+    "compelem": "0.27.0",
+    "jsdom": "^25.0.1",
+    "myfx": "^1.15.11",
+    "typescript": "^5.7.3",
+    "vite": "^6.0.0",
+    "vite-plugin-dts": "^4.3.0",
+    "vitest": "^3.0.0"
+  }
+}

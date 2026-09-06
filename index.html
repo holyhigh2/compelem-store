@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>compelem-store demo</title>
+  <style>
+    :root { color-scheme: light; }
+    body {
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 24px 16px 64px;
+      background: #f6f7f9;
+      color: #24292f;
+    }
+    h1 { font-size: 20px; }
+    h2 { font-size: 15px; margin: 8px 0; color: #57606a; font-weight: 500; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .panel {
+      background: #fff;
+      border: 1px solid #d0d7de;
+      border-radius: 10px;
+      padding: 16px;
+    }
+    code { background: #eff1f3; border-radius: 4px; padding: 1px 5px; font-size: 12px; }
+    .log {
+      background: #0d1117; color: #7ee787;
+      font-family: Consolas, monospace; font-size: 12px;
+      border-radius: 8px; padding: 12px; min-height: 120px;
+      max-height: 220px; overflow: auto; white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <h1>compelem-store demo</h1>
+  <p>Pinia-like store for CompElem · headless host + facade proxy · 零框架改动，仅依赖安装包</p>
+
+  <h2>1. defineStore —— 两个独立组件共享同一 store（跨组件同步 + getters）</h2>
+  <div class="grid">
+    <div class="panel"><ce-counter-panel></ce-counter-panel></div>
+    <div class="panel"><ce-counter-badge label="badge 组件（独立实例，同一 store）"></ce-counter-badge></div>
+  </div>
+
+  <h2>1b. 只读 getter 的组件也应自动订阅（自动订阅 bug 回归）</h2>
+  <div class="panel"><ce-getter-only></ce-getter-only></div>
+
+  <h2>2. defineStore（轻量态）—— 直接读写 facade + patch / reset</h2>
+  <div class="panel"><ce-theme-panel></ce-theme-panel></div>
+
+  <h2>3. 数组 state + forEach 指令（子视图精确更新）</h2>
+  <div class="panel"><ce-todo-app></ce-todo-app></div>
+
+  <h2>4. subscribe —— 手动监听（不参与渲染）</h2>
+  <div class="panel">
+    <div class="log" id="sub-log">// counter store 的 subscribe 日志</div>
+  </div>
+
+  <script type="module" src="/test/main.ts"></script>
+</body>
+</html>
