@@ -1,0 +1,289 @@
+# compelem-store - Full API Reference
+
+## Overview
+
+compelem-store is a lightweight, reactive global state management library for CompElem Web Components. It provides Pinia/Vuex-like functionality with automatic component subscription.
+
+## Installation
+
+```bash
+npm install compelem-store
+```
+
+Peer dependencies: `compelem >= 0.27.0`, `myfx ^1.15.11`
+
+## Import
+
+```ts
+import { defineStore, useStore, getStoreById, disposeStore, resetStores } from 'compelem-store'
+```
+
+---
+
+## defineStore(options)
+
+Creates a store with singleton behavior per `id`.
+
+### Options (Full Form)
+
+```ts
+defineStore({
+  id: 'counter',           // Unique store ID (required)
+  state: () => ({          // State factory function (required)
+    count: 0,
+    step: 1
+  }),
+  getters: {
+    double: (state) => state.count * 2,  // Lazy-evaluated computed
+  },
+  actions: {
+    inc() {                                // Actions bound to store facade
+      this.count += this.step
+    },
+  },
+})
+```
+
+### Options (Lightweight Form)
+
+```ts
+defineStore({
+  id: 'theme',
+  state: () => ({ mode: 'light' }),
+})
+// Returns facade directly (no factory call needed)
+```
+
+### Store Facade
+
+The returned facade provides:
+
+| Property/Method | Description |
+| --- | --- |
+| `store.id` | Store identifier |
+| `store.state` | Reactive state proxy |
+| `store[key]` | Read/write state directly |
+| `store[key]` (getter) | Lazy-evaluated computed property |
+| `store[action]()` | Call action with `this` bound to facade |
+| `store.patch(partial)` | Batch update multiple keys |
+| `store.reset()` | Reinitialize state using factory |
+| `store.subscribe(cb)` | Subscribe to mutations |
+| `store.connect(comp)` | Explicitly subscribe a component |
+| `store.disconnect(comp)` | Unsubscribe a component |
+
+---
+
+## State
+
+State is created via compelem's reactive system. All writes trigger automatic component updates.
+
+```ts
+// Direct mutation
+store.count++
+
+// Batch update
+store.patch({ count: 100, step: 2 })
+```
+
+---
+
+## Getters
+
+Getters are lazily evaluated with per-name caching. Cache is invalidated on every state change.
+
+```ts
+const store = defineStore({
+  id: 'cart',
+  state: () => ({ items: [], taxRate: 0.1 }),
+  getters: {
+    total: (state) => state.items.reduce((sum, item) => sum + item.price, 0),
+    totalWithTax: (state, getters) => getters.total * (1 + state.taxRate),
+  },
+})
+```
+
+---
+
+## Actions
+
+Actions have `this` bound to the store facade, allowing direct state mutation.
+
+```ts
+const store = defineStore({
+  id: 'counter',
+  state: () => ({ count: 0 }),
+  actions: {
+    inc() { this.count++ },
+    dec() { this.count-- },
+    reset() { this.count = 0 },
+  },
+})
+```
+
+---
+
+## useStore(store | "id", comp): Store
+
+Explicitly subscribe a component to a store.主要用于 `render()` 之外的场景。
+
+```ts
+// In connectedCallback or event handlers
+const store = useStore('counter', this)
+// or
+const store = useStore(counterStore, this)
+```
+
+**Note:** Reading store properties in `render()` already auto-subscribes.
+
+---
+
+## getStoreById(id): Store | undefined
+
+Get a registered store facade by ID.
+
+```ts
+const store = getStoreById('counter')
+if (store) {
+  console.log(store.count)
+}
+```
+
+---
+
+## disposeStore(id): void
+
+Unregister a store from the registry.
+
+```ts
+disposeStore('counter')
+```
+
+---
+
+## resetStores(): void
+
+Clear all registered stores (for test isolation).
+
+```ts
+resetStores()
+```
+
+---
+
+## subscribe(cb): () => void
+
+Subscribe to store mutations. Returns unsubscribe function.
+
+```ts
+const unsubscribe = store.subscribe((mutation, snapshot) => {
+  console.log(mutation.key)      // "__ce_store_counter.count"
+  console.log(mutation.oldValue) // 0
+  console.log(mutation.newValue) // 1
+  console.log(mutation.chain)    // ["__ce_store_counter", "count"]
+})
+
+// Later
+unsubscribe()
+```
+
+### Mutation Object
+
+| Property | Type | Description |
+| --- | --- | --- |
+| `key` | `string` | Full dotted path (e.g., `"__ce_store_counter.count"`) |
+| `oldValue` | `any` | Previous leaf value |
+| `newValue` | `any` | New leaf value |
+| `chain` | `string[]` | Path segments |
+
+---
+
+## Usage in Components
+
+### Inside render() (Auto-subscribe)
+
+```ts
+@tag('counter-view')
+export class CounterView extends CompElem {
+  render() {
+    const store = counterStore  // Reading auto-subscribes
+    return h`<span>${store.count}</span>
+             <button @click=${() => store.inc()}>+1</button>`
+  }
+}
+```
+
+### Outside render() (Explicit subscription)
+
+```ts
+@tag('counter-view')
+export class CounterView extends CompElem {
+  connectedCallback() {
+    super.connectedCallback()
+    const store = useStore('counter', this)
+    console.log('Store connected:', store.count)
+  }
+}
+```
+
+---
+
+## Reactive Behavior
+
+- State changes are batched per tick
+- Components are subscribed via WeakRef (auto-cleanup)
+- Getters are lazily evaluated with cache invalidation
+- Duplicate `defineStore` with same ID returns existing facade + warning
+
+---
+
+## Testing
+
+```ts
+import { defineStore, resetStores } from 'compelem-store'
+
+beforeEach(() => {
+  resetStores()  // Clean slate for each test
+})
+
+it('increments counter', () => {
+  const store = defineStore({
+    id: 'counter',
+    state: () => ({ count: 0 }),
+  })
+  
+  store.inc()
+  expect(store.count).toBe(1)
+})
+```
+
+---
+
+## Types
+
+```ts
+interface DefineStoreOptions<S> {
+  id: string
+  state: () => S
+  getters?: Record<string, (state: S, getters: any) => any>
+  actions?: Record<string, (...args: any[]) => any>
+}
+
+interface StoreFacade<S> {
+  id: string
+  state: S
+  patch(partial: Partial<S>): void
+  reset(): void
+  subscribe(cb: SubscribeCallback): () => void
+  connect(comp: any): void
+  disconnect(comp: any): void
+}
+
+interface Mutation {
+  key: string
+  oldValue: any
+  newValue: any
+  chain: string[]
+}
+
+type SubscribeCallback = (mutation: Mutation, snapshot: any) => void
+```

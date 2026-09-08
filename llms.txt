@@ -1,0 +1,54 @@
+# compelem-store
+
+> A lightweight, reactive global store for CompElem — Pinia/Vuex-like state management for Web Components.
+
+## Docs
+
+- [README](./README.md) - Installation, usage, and API reference
+- [GitHub Repository](https://github.com/holyhigh2/compelem-store) - Source code and issues
+
+## Features
+
+- Reactive state with automatic component subscription
+- Define store with state, getters, and actions
+- Singleton per store ID
+- `patch()` for batch updates
+- `reset()` to reinitialize state
+- Subscribe to mutations
+- Automatic cleanup (WeakRef-based)
+
+## Quick Start
+
+```ts
+import { defineStore } from 'compelem-store'
+
+const counterStore = defineStore({
+  id: 'counter',
+  state: () => ({ count: 0, step: 1 }),
+  getters: {
+    double: (state) => state.count * 2,
+  },
+  actions: {
+    inc() { this.count += this.step },
+  },
+})
+
+// In component render()
+const store = counterStore
+return h`<span>${store.count} / ${store.double}</span>
+         <button @click=${() => store.inc()}>+1</button>`
+```
+
+## API
+
+| API | Description |
+| --- | --- |
+| `defineStore(options)` | Create store (singleton per id) |
+| `getStoreById(id)` | Get registered store facade |
+| `disposeStore(id)` / `resetStores()` | Unregister stores (for testing) |
+| `useStore(store, comp)` | Explicit component subscription |
+| `store.state` | Reactive state proxy |
+| `store.patch(partial)` | Batch update |
+| `store.reset()` | Reinitialize state |
+| `store.subscribe(cb)` | Subscribe to mutations |
+| `store.connect(comp)` / `disconnect(comp)` | Manual subscription |
