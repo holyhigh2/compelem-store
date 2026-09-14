@@ -1,6 +1,7 @@
 import { CompElem, createReactiveState, getCurrentRenderComponent, showWarn } from "compelem";
 import { has, isPlainObject } from "myfx";
 import type { DefineStoreOptions, StoreFacade, StoreMutation, StoreSubscriber } from "./types";
+import { clearStoreDevtools, registerStoreDevtools, unregisterStoreDevtools } from "./devtools";
 
 /** 同 id 的 store 单例注册表（直接存 facade） */
 const registry = new Map<string, any>();
@@ -183,6 +184,17 @@ function createStoreInternal<S extends Record<string, any>, G extends Record<str
     },
   });
 
+  // ---- 6. devtools 接入点（未安装 devtools 时只是往 globalThis 挂一个对象）----
+  // getters/actions 必须显式登记：facade 的 ownKeys 只暴露 state，
+  // devtools 无法通过反射枚举出这两类成员。
+  registerStoreDevtools({
+    id,
+    facade,
+    getters: Object.keys(getters),
+    actions: Object.keys(actions),
+    slotKey,
+  });
+
   return facade as StoreFacade<S, G, A>;
 }
 
@@ -238,6 +250,7 @@ export function defineStore<S extends Record<string, any>, G extends Record<stri
  * 因此本 API 应在确认无组件引用旧 facade 时使用。
  */
 export function disposeStore(id: string): boolean {
+  unregisterStoreDevtools(id);
   return registry.delete(id);
 }
 
@@ -245,5 +258,6 @@ export function disposeStore(id: string): boolean {
  * 清空全部已注册 store（测试 / 整体重置场景）。注意事项同 {@link disposeStore}。
  */
 export function resetStores(): void {
+  clearStoreDevtools();
   registry.clear();
 }

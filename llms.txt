@@ -1,27 +1,23 @@
 # compelem-store
 
-> A lightweight, reactive global store for CompElem — Pinia/Vuex-like state management for Web Components.
+> 轻量级响应式全局状态管理，为 compelem Web Components 提供类似 Pinia/Vuex 的状态管理能力。
 
-## Docs
+## 核心功能
 
-- [README](./README.md) - Installation, usage, and API reference
-- [GitHub Repository](https://github.com/holyhigh2/compelem-store) - Source code and issues
+- **响应式状态** — 基于 compelem 的响应式系统，自动追踪依赖
+- **单例模式** — 同一 `id` 的 store 自动共享实例
+- **懒加载订阅** — render 内读取即自动订阅，无需手动注册
+- **批量更新** — 状态变更按 tick 批量通知组件
+- **Getters** — 懒计算属性，带缓存
+- **Actions** — 直接读写 state 的方法
 
-## Features
-
-- Reactive state with automatic component subscription
-- Define store with state, getters, and actions
-- Singleton per store ID
-- `patch()` for batch updates
-- `reset()` to reinitialize state
-- Subscribe to mutations
-- Automatic cleanup (WeakRef-based)
-
-## Quick Start
+## 快速开始
 
 ```ts
+import { CompElem, tag, h } from 'compelem'
 import { defineStore } from 'compelem-store'
 
+// 定义 store
 const counterStore = defineStore({
   id: 'counter',
   state: () => ({ count: 0, step: 1 }),
@@ -33,22 +29,87 @@ const counterStore = defineStore({
   },
 })
 
-// In component render()
-const store = counterStore
-return h`<span>${store.count} / ${store.double}</span>
-         <button @click=${() => store.inc()}>+1</button>`
+// 在组件中使用
+@tag('counter-view')
+export class CounterView extends CompElem {
+  render() {
+    return h`<span>${counterStore.count} / ${counterStore.double}</span>
+             <button @click=${() => counterStore.inc()}>+1</button>`
+  }
+}
 ```
 
 ## API
 
-| API | Description |
-| --- | --- |
-| `defineStore(options)` | Create store (singleton per id) |
-| `getStoreById(id)` | Get registered store facade |
-| `disposeStore(id)` / `resetStores()` | Unregister stores (for testing) |
-| `useStore(store, comp)` | Explicit component subscription |
-| `store.state` | Reactive state proxy |
-| `store.patch(partial)` | Batch update |
-| `store.reset()` | Reinitialize state |
-| `store.subscribe(cb)` | Subscribe to mutations |
-| `store.connect(comp)` / `disconnect(comp)` | Manual subscription |
+### `defineStore(options)`
+
+| 选项 | 类型 | 说明 |
+|---|---|---|
+| `id` | `string` | Store 唯一标识，必填 |
+| `state` | `() => object` | 状态工厂函数，必填 |
+| `getters` | `Record<string, (state) => any>` | 计算属性 |
+| `actions` | `Record<string, Function>` | 操作方法 |
+
+### Store Facade
+
+| 方法/属性 | 说明 |
+|---|---|
+| `store.state` | 响应式 state 代理 |
+| `store.patch(partial)` | 批量更新 |
+| `store.reset()` | 重新初始化 state |
+| `store.subscribe(cb)` | 手动监听，返回退订函数 |
+| `store.connect(comp)` | 显式接入组件订阅 |
+| `store.disconnect(comp)` | 解除组件订阅 |
+
+### 工具函数
+
+| 函数 | 说明 |
+|---|---|
+| `useStore(store, comp)` | 显式接入订阅（render 内可选） |
+| `getStoreById(id)` | 按 id 获取 store |
+| `disposeStore(id)` | 移除 store |
+| `resetStores()` | 清空所有 store（测试用） |
+
+## 用法示例
+
+### 轻量模式（仅 state）
+
+```ts
+const themeStore = defineStore({
+  id: 'theme',
+  state: () => ({ mode: 'light' }),
+})
+
+// 直接读写
+themeStore.mode = 'dark'
+```
+
+### 完整模式（state + getters + actions）
+
+```ts
+const todoStore = defineStore({
+  id: 'todos',
+  state: () => ({ items: [], filter: 'all' }),
+  getters: {
+    filtered: (state) => state.items.filter(/* ... */),
+  },
+  actions: {
+    add(text) { this.items.push({ text, done: false }) },
+    toggle(index) { this.items[index].done = !this.items[index].done },
+  },
+})
+```
+
+### 监听变更
+
+```ts
+const unsubscribe = store.subscribe((mutation, snapshot) => {
+  console.log(mutation.key, mutation.oldValue, '→', mutation.newValue)
+})
+```
+
+## 资源
+
+- [GitHub 仓库](https://github.com/holyhigh2/compelem-store)
+- [npm 包](https://www.npmjs.com/package/compelem-store)
+- [完整文档](https://github.com/holyhigh2/compelem-store/blob/main/README.md)

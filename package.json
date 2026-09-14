@@ -1,6 +1,6 @@
 {
   "name": "compelem-store",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A store for CompElem",
   "author": "holyhigh2",
   "type": "module",
@@ -16,7 +16,9 @@
     "./package.json": "./package.json"
   },
   "files": [
-    "dist"
+    "dist",
+    "llms.txt",
+    "README.md"
   ],
   "scripts": {
     "dev": "vite",
