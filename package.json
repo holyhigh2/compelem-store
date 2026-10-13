@@ -1,6 +1,6 @@
 {
   "name": "compelem-store",
-  "version": "0.1.1",
+  "version": "0.3.0-beta.1",
   "description": "A store for CompElem",
   "author": "holyhigh2",
   "type": "module",
@@ -35,13 +35,14 @@
   ],
   "license": "MIT",
   "peerDependencies": {
-    "compelem": ">=0.27.0",
-    "myfx": "^1.15.11"
+    "compelem": ">=0.30.0",
+    "myfx": "^2.0.0-beta.2"
   },
   "devDependencies": {
-    "compelem": "0.27.0",
+    "@compelem/compiler": "^0.30.0-beta.2",
+    "compelem": "0.30.0-beta.2",
     "jsdom": "^25.0.1",
-    "myfx": "^1.15.11",
+    "myfx": "^2.0.0-beta.2",
     "typescript": "^5.7.3",
     "vite": "^6.0.0",
     "vite-plugin-dts": "^4.3.0",

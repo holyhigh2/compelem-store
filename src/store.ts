@@ -1,7 +1,7 @@
-import { CompElem, createReactiveState, getCurrentRenderComponent, showWarn } from "compelem";
+import { CompElem, showWarn, signal, signalComputed } from "compelem";
 import { has, isPlainObject } from "myfx";
-import type { DefineStoreOptions, StoreFacade, StoreMutation, StoreSubscriber } from "./types";
 import { clearStoreDevtools, registerStoreDevtools, unregisterStoreDevtools } from "./devtools";
+import type { DefineStoreOptions, StoreFacade, StoreMutation, StoreSubscriber } from "./types";
 
 /** 同 id 的 store 单例注册表（直接存 facade） */
 const registry = new Map<string, any>();
@@ -19,7 +19,7 @@ function createStoreInternal<S extends Record<string, any>, G extends Record<str
 ): StoreFacade<S, G, A> {
   const { id, getters = {} as G, actions = {} as A } = options;
 
-  // ---- 1. 直接造框架响应式代理（不再需要 headless CompElem 宿主）-----------
+  // ---- 1. 信号化响应式状态 ----------------------------------------------------
   const slotKey = sanitizeSlotKey(id);
   const raw = options.state();
   if (!isPlainObject(raw)) {
@@ -30,21 +30,83 @@ function createStoreInternal<S extends Record<string, any>, G extends Record<str
   const compKnown = new WeakSet<object>();
   const listeners = new Set<StoreSubscriber>();
   let version = 0;
-  // _getPrivateData 必须返回 { [slotKey]: raw } —— 与 set 陷阱里
-  // context._getPrivateData()[subChain[0]]（subChain[0] === slotKey）的取根逻辑一致，
-  // 从而 nv/ov 拿到整个 state 根对象（与改动前 host._notify 行为字节级一致）。
-  const data = { [slotKey]: raw };
-  const host = { _getPrivateData: () => data } as any;
-  // reactive 内部把 OBJECT_VAR_PATH 设为 [slotKey]，与组件 render 期间 Collector
-  // 收集的依赖路径（slotKey.xxx）完全一致，组件侧 _notify / ViewDepMap 匹配零改动。
-  const stateProxy = createReactiveState(raw, host, slotKey) as Record<string, any>;
+  const sigs: Record<string, any> = {};
+  for (const k of Object.keys(raw)) sigs[k] = signal(raw[k]);
 
-  // ---- 2. getters（惰性求值 + 版本失效） ----------------------------------
-  const getterCache = new Map<string, { version: number; value: any }>();
+  // ---- 1.1 嵌套深响应式（兼容 0.1.x 的深代理语义） --------------------------
+  // 0.3.0 只把顶层 state key 做成 signal；嵌套对象/数组是普通引用，赋值
+  // （selection.nodes = ... / node.x = 5 / doc.nodes.push(...)）不触发任何
+  // signal、不广播，订阅者（画布 onStoreChange、useStore 等）全部失活。
+  // 这里在读取顶层值时把嵌套对象/数组递归包成响应式 proxy：嵌套 set/delete
+  // 与数组变更方法都向上层 chain 广播，恢复「任意写入即通知」的语义。
+  // 注意：broadcast 已被 compelem-store 自身与调用方自己的批量包装（项目侧
+  // subscribeBatched / compelem Queue）合并，深响应式不会放大写入次数。
+  const wrapped = new WeakMap<object, any>();
+  const ARRAY_MUTATORS = ['push', 'pop', 'shift', 'unshift', 'splice', 'sort', 'reverse', 'fill', 'copyWithin'];
+  function makeReactive(obj: any, chain: string[]): any {
+    if (obj === null || typeof obj !== 'object') return obj;
+    const cached = wrapped.get(obj);
+    if (cached) return cached;
+    const isArr = Array.isArray(obj);
+    const p = new Proxy(obj, {
+      get(target, k, recv) {
+        if (isArr && ARRAY_MUTATORS.includes(k as string)) {
+          return (...args: any[]) => {
+            const res = (target as any)[k as string].apply(target, args);
+            broadcast(undefined, undefined, [...chain, k as string], undefined, undefined);
+            return res;
+          };
+        }
+        if (typeof k !== 'string') return Reflect.get(target, k, target);
+        return makeReactive(Reflect.get(target, k, target), [...chain, k]);
+      },
+      set(target, k, v, recv) {
+        const old = Reflect.get(target, k, target);
+        const nv = makeReactive(v, [...chain, k as string]);
+        Reflect.set(target, k, nv, target);
+        broadcast(undefined, old, [...chain, k as string], nv, old);
+        return true;
+      },
+      deleteProperty(target, k) {
+        const old = Reflect.get(target, k, target);
+        Reflect.deleteProperty(target, k);
+        broadcast(undefined, undefined, [...chain, k as string], undefined, old);
+        return true;
+      },
+    });
+    wrapped.set(obj, p);
+    return p;
+  }
+
+  const stateProxy: Record<string, any> = new Proxy({} as Record<string, any>, {
+    get(_t, k: string | symbol) { return typeof k === 'string' && sigs[k] ? makeReactive(sigs[k].value, [slotKey, k]) : undefined; },
+    set(_t, k: string | symbol, v) {
+      if (typeof k !== 'string') return false;
+      const old = sigs[k] ? sigs[k].value : undefined;
+      if (!sigs[k]) sigs[k] = signal(v); else sigs[k].value = v;
+      broadcast(undefined, old, [slotKey, k], v, old);
+      return true;
+    },
+    has(_t, k) { return typeof k === 'string' && k in sigs; },
+    deleteProperty(_t, k) {
+      if (typeof k === 'string' && k in sigs) {
+        const old = sigs[k].value;
+        delete sigs[k];
+        broadcast(undefined, old, [slotKey, k], undefined, old);
+        return true;
+      }
+      return false;
+    },
+    ownKeys() { return Object.keys(sigs); },
+    getOwnPropertyDescriptor(_t, k) { return typeof k === 'string' && k in sigs ? { enumerable: true, configurable: true, value: sigs[k].value } : undefined; },
+  });
+
+  // ---- 2. getters（signal 依赖自动失效） --------------------------------------
+  const getterCache = new Map<string, any>();
   function getGetter(name: string): any {
     let c = getterCache.get(name);
-    if (!c || c.version !== version) {
-      c = { version, value: (getters as any)[name](stateProxy) };
+    if (!c) {
+      c = signalComputed(() => (getters as any)[name](stateProxy));
       getterCache.set(name, c);
     }
     return c.value;
@@ -61,18 +123,11 @@ function createStoreInternal<S extends Record<string, any>, G extends Record<str
     compRefs.add(new WeakRef(comp));
   }
 
-  // 所有变更经框架 reactive 代理 → 框架 requestUpdate → context._notify（即本函数）
-  // 统一在此广播。chain 以 slotKey 为根，与组件 render 期间 Collector 收集到的
-  // 依赖路径完全一致，组件侧 _notify / ViewDepMap 匹配零改动。
-  // （此前版本用 headless CompElem 宿主透传，现直接由普通对象承担，顺带消除了
-  //  宿主永不挂载导致 #updateSources 无界增长的内存泄漏。）
+  // 所有变更都经 signal 直写：组件模板的 point effect 读到 sig.value 即建立订阅，
+  // 信号变更自动驱动对应 DOM 更新推进；此处只需通知显式 subscribe 的监听器。
   function broadcast(nv: any, ov: any, chain: string[], subNewValue?: any, subOldValue?: any) {
     version++;
     const path = chain.join(".");
-    // 框架已在 _notify 的 subNewValue/subOldValue 中填入该路径的叶子级新/旧值
-    // （compelem requestUpdate 现透传 set 陷阱算好的叶子值，见 compelem index.js:664 / :644），
-    // 故 subscribe 的 newValue/oldValue 直接取这两个参数，无需 store 侧再维护快照。
-    // 注：nv/ov（root 级）在 chain 长度 > 1 时仍被框架塌缩为同一 root 对象，仅用于组件更新管线。
     const newVal = subNewValue;
     const oldVal = subOldValue;
     if (listeners.size > 0) {
@@ -86,18 +141,7 @@ function createStoreInternal<S extends Record<string, any>, G extends Record<str
         }
       });
     }
-    compRefs.forEach(ref => {
-      const comp = ref.deref();
-      if (!comp || comp.isDestroyed || !comp.isConnected) {
-        compRefs.delete(ref);
-        return;
-      }
-      // 组件更新管线沿用框架下发的 (nv, ov, chain, subNV, subOV)，与改动前一致；
-      // store 侧对 oldValue 的处理只影响 subscribe 回调，不改组件渲染行为。
-      comp._notify(nv, ov, chain, subNewValue, subOldValue);
-    });
   }
-  host._notify = broadcast;
 
   // ---- 4. store 方法（无 $ 前缀） -------------------------------------------
   const methods: Record<string, any> = {
@@ -117,12 +161,10 @@ function createStoreInternal<S extends Record<string, any>, G extends Record<str
       Object.keys(fresh).forEach(k => {
         (stateProxy as any)[k] = (fresh as any)[k];
       });
-      // 移除 state() 中不存在的多余键并广播
+      // 移除 state() 中不存在的多余键
       Object.keys(stateProxy).forEach(k => {
         if (!has(fresh, k)) {
-          const old = (stateProxy as any)[k];
           delete (stateProxy as any)[k];
-          broadcast(undefined, old, [slotKey, k]);
         }
       });
     },
@@ -145,10 +187,6 @@ function createStoreInternal<S extends Record<string, any>, G extends Record<str
   const facade: any = new Proxy(stateProxy, {
     get(target, prop) {
       if (typeof prop === "string") {
-        if (!has(methods, prop)) {
-          const comp = getCurrentRenderComponent();
-          if (comp) subscribe(comp as CompElem);
-        }
         if (has(methods, prop)) {
           const m = methods[prop];
           return typeof m === "function" ? m.bind(facade) : m;
@@ -167,12 +205,9 @@ function createStoreInternal<S extends Record<string, any>, G extends Record<str
       return Reflect.has(target, prop);
     },
     deleteProperty(target, prop) {
+      // 删除广播由 stateProxy 的 deleteProperty trap 触发
       if (typeof prop === "string" && has(target, prop)) {
-        const old = Reflect.get(target, prop, target);
-        const rs = Reflect.deleteProperty(target, prop);
-        // 框架代理无 deleteProperty trap，手动广播一次
-        broadcast(undefined, old, [slotKey, prop]);
-        return rs;
+        return Reflect.deleteProperty(target, prop);
       }
       return Reflect.deleteProperty(target, prop);
     },

@@ -34,11 +34,10 @@ export const todoStore = defineStore({
   }),
   actions: {
     add(text: string) {
-      this.items.push({ id: Date.now(), text, done: false });
+      this.items = [...this.items, { id: Date.now(), text, done: false }];
     },
     toggle(id: number) {
-      const item = this.items.find((i: TodoItem) => i.id === id);
-      if (item) item.done = !item.done;
+      this.items = this.items.map((i: TodoItem) => i.id === id ? { ...i, done: !i.done } : i);
     },
     remove(id: number) {
       this.items = this.items.filter((i: TodoItem) => i.id !== id);
