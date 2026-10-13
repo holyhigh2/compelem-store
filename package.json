@@ -34,13 +34,9 @@
     "web-components"
   ],
   "license": "MIT",
-  "peerDependencies": {
-    "compelem": ">=0.30.0",
-    "myfx": "^2.0.0-beta.2"
-  },
   "devDependencies": {
-    "@compelem/compiler": "^0.30.0-beta.2",
-    "compelem": "0.30.0-beta.2",
+    "@compelem/compiler": "^0.30.0-beta.3",
+    "compelem": "0.30.0-beta.3",
     "jsdom": "^25.0.1",
     "myfx": "^2.0.0-beta.2",
     "typescript": "^5.7.3",
