@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, vi } from "vitest";
-import { defineComponents } from "compelem";
+import { defineComponents, effect, flushSync } from "compelem";
 import { defineStore, getStoreById, useStore } from "../src/index";
 import { counterStore, themeStore, todoStore } from "./stores";
 import { CounterPanel, CounterBadge, GetterOnly, ThemePanel, TodoApp } from "./components";
@@ -147,5 +147,43 @@ describe("store API", () => {
       expect.stringContaining("no store registered with id 'nope'")
     );
     warn.mockRestore();
+  });
+});
+
+describe('deep reactive: array mutator notifies template effects (2026-10-15 fix)', () => {
+  it('push/splice re-run effects that read the array', () => {
+    const s = defineStore({ id: 'arr-push-test', state: () => ({ list: [1, 2] as number[] }) });
+    let runs = 0;
+    let lastLen = -1;
+    const e = effect(() => {
+      runs++;
+      lastLen = s.list.length;
+    });
+    expect(lastLen).toBe(2);
+    s.list.push(3);
+    flushSync();
+    expect(runs).toBeGreaterThanOrEqual(2);
+    expect(lastLen).toBe(3);
+    s.list.splice(0, 1);
+    flushSync();
+    expect(lastLen).toBe(2);
+    e.dispose();
+  });
+
+  it('nested plain set does NOT force template re-run (by design)', () => {
+    const s = defineStore({
+      id: 'nested-set-test',
+      state: () => ({ obj: { text: 'a' } }),
+    });
+    let runs = 0;
+    const e = effect(() => {
+      void s.obj;
+      runs++;
+    });
+    s.obj.text = 'b';
+    flushSync();
+    // 嵌套属性写只广播 listeners，不触发读者重跑（宿主画布依赖此语义）
+    expect(runs).toBe(1);
+    e.dispose();
   });
 });

@@ -1,6 +1,6 @@
 {
   "name": "compelem-store",
-  "version": "0.3.0-beta.2",
+  "version": "0.3.0-beta.4",
   "description": "A store for CompElem",
   "author": "holyhigh2",
   "type": "module",
@@ -34,12 +34,16 @@
     "web-components"
   ],
   "license": "MIT",
+  "peerDependencies": {
+    "compelem": "^0.30.0-beta.4",
+    "myfx": "^2.0.0-beta.4"
+  },
   "devDependencies": {
-    "@compelem/compiler": "^0.30.0-beta.3",
+    "@compelem/compiler": "^0.30.0-beta.4",
     "@rolldown/binding-win32-x64-msvc": "1.2.9",
-    "compelem": "0.30.0-beta.3",
+    "compelem": "^0.30.0-beta.4",
     "jsdom": "^25.0.1",
-    "myfx": "^2.0.0-beta.2",
+    "myfx": "^2.0.0-beta.4",
     "typescript": "^5.7.3",
     "vite": "^6.0.0",
     "vite-plugin-dts": "^4.3.0",

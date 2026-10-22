@@ -29,7 +29,6 @@ function createStoreInternal<S extends Record<string, any>, G extends Record<str
   const compRefs = new Set<WeakRef<CompElem>>();
   const compKnown = new WeakSet<object>();
   const listeners = new Set<StoreSubscriber>();
-  let version = 0;
   const sigs: Record<string, any> = {};
   for (const k of Object.keys(raw)) sigs[k] = signal(raw[k]);
 
@@ -41,40 +40,59 @@ function createStoreInternal<S extends Record<string, any>, G extends Record<str
   // 与数组变更方法都向上层 chain 广播，恢复「任意写入即通知」的语义。
   // 注意：broadcast 已被 compelem-store 自身与调用方自己的批量包装（项目侧
   // subscribeBatched / compelem Queue）合并，深响应式不会放大写入次数。
-  const wrapped = new WeakMap<object, any>();
+  //
+  // ⚠️ 2026-10-15 修复「数组 mutator 不触发模板更新」缺陷：
+  // broadcast 只通知显式 subscribe 的监听器，而模板 point effect 依赖的是
+  // signal 写入 —— 顶层重赋值（sig.value = v）会触发，push/splice 等原地
+  // mutator 不会 ⇒ 按官方文档示例写的 `store.items.push(x)` 之后 UI 不更新
+  // （读过 items 的模板冻结在首渲染帧）。修法：给每个被代理的**数组**挂一个
+  // 对象级版本 signal —— 数组被读时注册依赖（track），mutator 执行后自增。
+  // 只有「读过该数组」的效果会重跑，粒度到对象为止。
+  //
+  // 刻意**不**对普通嵌套 set 做 ver 触发：宿主工程（compelem-report-builder）
+  // 的画布把单元格原文写入 cell.text（嵌套 set）并依赖「写原文不回流视图」
+  // 的性能设计（Workbench 一次性把行数据派生给 ce-editable，若每次嵌套写都
+  // 触发读者重跑，每敲一格就会重建网格导致光标跳动）。嵌套属性写的模板更新
+  // 仍走「顶层重赋值 / Seq 通道」，与该工程既有架构一致。
+  const wrapped = new WeakMap<object, { p: any; ver: any }>();
   const ARRAY_MUTATORS = ['push', 'pop', 'shift', 'unshift', 'splice', 'sort', 'reverse', 'fill', 'copyWithin'];
   function makeReactive(obj: any, chain: string[]): any {
     if (obj === null || typeof obj !== 'object') return obj;
     const cached = wrapped.get(obj);
-    if (cached) return cached;
+    if (cached) return cached.p;
     const isArr = Array.isArray(obj);
+    // 对象级版本 signal：仅数组使用（读时 track、mutator 后自增）
+    const ver = isArr ? signal(0) : null;
     const p = new Proxy(obj, {
       get(target, k, recv) {
         if (isArr && ARRAY_MUTATORS.includes(k as string)) {
           return (...args: any[]) => {
             const res = (target as any)[k as string].apply(target, args);
-            broadcast(undefined, undefined, [...chain, k as string], undefined, undefined);
+            ver!.value++; // 结构变更：读过该数组的模板 effect 重跑（见上方注释）
+            broadcast([...chain, k as string]);
             return res;
           };
         }
         if (typeof k !== 'string') return Reflect.get(target, k, target);
+        // 数组任意键读取（length / 索引 / 方法名）都注册对 ver 的依赖
+        if (isArr) ver!.value;
         return makeReactive(Reflect.get(target, k, target), [...chain, k]);
       },
       set(target, k, v, recv) {
         const old = Reflect.get(target, k, target);
         const nv = makeReactive(v, [...chain, k as string]);
         Reflect.set(target, k, nv, target);
-        broadcast(undefined, old, [...chain, k as string], nv, old);
+        broadcast([...chain, k as string], nv, old);
         return true;
       },
       deleteProperty(target, k) {
         const old = Reflect.get(target, k, target);
         Reflect.deleteProperty(target, k);
-        broadcast(undefined, undefined, [...chain, k as string], undefined, old);
+        broadcast([...chain, k as string], undefined, old);
         return true;
       },
     });
-    wrapped.set(obj, p);
+    wrapped.set(obj, { p, ver });
     return p;
   }
 
@@ -84,7 +102,7 @@ function createStoreInternal<S extends Record<string, any>, G extends Record<str
       if (typeof k !== 'string') return false;
       const old = sigs[k] ? sigs[k].value : undefined;
       if (!sigs[k]) sigs[k] = signal(v); else sigs[k].value = v;
-      broadcast(undefined, old, [slotKey, k], v, old);
+      broadcast([slotKey, k], v, old);
       return true;
     },
     has(_t, k) { return typeof k === 'string' && k in sigs; },
@@ -92,7 +110,7 @@ function createStoreInternal<S extends Record<string, any>, G extends Record<str
       if (typeof k === 'string' && k in sigs) {
         const old = sigs[k].value;
         delete sigs[k];
-        broadcast(undefined, old, [slotKey, k], undefined, old);
+        broadcast([slotKey, k], undefined, old);
         return true;
       }
       return false;
@@ -125,13 +143,13 @@ function createStoreInternal<S extends Record<string, any>, G extends Record<str
 
   // 所有变更都经 signal 直写：组件模板的 point effect 读到 sig.value 即建立订阅，
   // 信号变更自动驱动对应 DOM 更新推进；此处只需通知显式 subscribe 的监听器。
-  function broadcast(nv: any, ov: any, chain: string[], subNewValue?: any, subOldValue?: any) {
-    version++;
+  // ⚠️ 旧签名是 `broadcast(nv, ov, chain, subNewValue, subOldValue)`，但前两个形参在
+  // 函数体内从未被读取（真正生效的是后三个），且 `version++` 无人消费 ⇒ 已收敛为
+  // `(chain, newValue, oldValue)`，避免调用方误以为前两个有语义。
+  function broadcast(chain: string[], newValue?: any, oldValue?: any) {
     const path = chain.join(".");
-    const newVal = subNewValue;
-    const oldVal = subOldValue;
     if (listeners.size > 0) {
-      const mutation: StoreMutation = { key: path, newValue: newVal, oldValue: oldVal, chain };
+      const mutation: StoreMutation = { key: path, newValue, oldValue, chain };
       const snapshot = { ...stateProxy };
       listeners.forEach(cb => {
         try {
@@ -238,6 +256,23 @@ function createStoreInternal<S extends Record<string, any>, G extends Record<str
  */
 export function getStoreById(id: string): object | undefined {
   return registry.get(id);
+}
+
+/**
+ * **非单例**工厂：直接构建一份全新 store，**不进注册表**（同 id 可建多份）。
+ *
+ * 用途：需要"同一份 store 逻辑、多个互相隔离的实例"的场景（例如一个宿主里
+ * 同时打开多份文档，每份要独立的 state / 订阅 / 历史）。`defineStore` 是"同 id
+ * 单例"，本函数是它的多实例版。
+ *
+ * ⚠️ 各实例的 `id` 建议唯一（如 `designer:tab-1`）：`id` 用于 devtools 登记与
+ * 变更路径前缀（`slotKey`）。用同一 id 建多份不会串数据（信号对象各自独立），
+ * 但 devtools 里会重名。
+ */
+export function createStore<S extends Record<string, any>, G extends Record<string, any> = {}, A extends Record<string, any> = {}>(
+  options: DefineStoreOptions<S, G, A>
+): StoreFacade<S, G, A> {
+  return createStoreInternal<S, G, A>(options);
 }
 
 /**
