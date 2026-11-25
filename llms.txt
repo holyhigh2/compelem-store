@@ -57,6 +57,7 @@ export class CounterView extends CompElem {
 | `store.state` | 响应式 state 代理 |
 | `store.patch(partial)` | 批量更新 |
 | `store.reset()` | 重新初始化 state |
+| `store.batch(fn)` | 合并同步写入的订阅通知 |
 | `store.subscribe(cb)` | 手动监听，返回退订函数 |
 | `store.connect(comp)` | 显式接入组件订阅 |
 | `store.disconnect(comp)` | 解除组件订阅 |
@@ -65,6 +66,8 @@ export class CounterView extends CompElem {
 
 | 函数 | 说明 |
 |---|---|
+| `createStore(options)` | 创建非单例、互相隔离的 store 实例 |
+| `createHistory(options)` | 快照式撤销/重做控制器 |
 | `useStore(store, comp)` | 显式接入订阅（render 内可选） |
 | `getStoreById(id)` | 按 id 获取 store |
 | `disposeStore(id)` | 移除 store |

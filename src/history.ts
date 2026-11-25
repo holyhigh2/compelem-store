@@ -25,7 +25,7 @@ export interface HistoryOptions {
   tracked: readonly string[];
   /** 取当前快照（须是可直接比较的字符串，通常为 `JSON.stringify(...)`） */
   snapshot: () => string;
-  /** 用快照还原（须走 store 的写通道，否则订阅方收不到通知） */
+  /** 用快照还原（须走 store 的写通道，否则订阅方收不到通知）；抛错时历史栈不变，但已写入的部分状态不会自动回滚 */
   restore: (json: string) => void;
   /** 连续变更的合并窗口（ms），默认 500 */
   coalesceMs?: number;
@@ -177,15 +177,16 @@ export function createHistory(opts: HistoryOptions): HistoryController {
   function undo(): boolean {
     if (undoStack.length < 1) return false;
     const current = opts.snapshot();
-    const prev = undoStack.pop() as string;
-    redoStack.push(current);
-    if (redoStack.length > limit) redoStack.shift();
+    const prev = undoStack[undoStack.length - 1];
     restoring = true;
     try {
       opts.restore(prev);
     } finally {
       restoring = false;
     }
+    undoStack.pop();
+    redoStack.push(current);
+    if (redoStack.length > limit) redoStack.shift();
     // 还原后指纹作废：紧跟其后的编辑必须新起一步，不能被合并进被撤销的那一步
     lastKey = "";
     lastAt = 0;
@@ -196,15 +197,16 @@ export function createHistory(opts: HistoryOptions): HistoryController {
   function redo(): boolean {
     if (redoStack.length < 1) return false;
     const current = opts.snapshot();
-    const next = redoStack.pop() as string;
-    undoStack.push(current);
-    if (undoStack.length > limit) undoStack.shift();
+    const next = redoStack[redoStack.length - 1];
     restoring = true;
     try {
       opts.restore(next);
     } finally {
       restoring = false;
     }
+    redoStack.pop();
+    undoStack.push(current);
+    if (undoStack.length > limit) undoStack.shift();
     lastKey = "";
     lastAt = 0;
     notify();

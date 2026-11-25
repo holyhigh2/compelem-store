@@ -29,7 +29,9 @@ function createStoreInternal<S extends Record<string, any>, G extends Record<str
   const compRefs = new Set<WeakRef<CompElem>>();
   const compKnown = new WeakSet<object>();
   const listeners = new Set<StoreSubscriber>();
-  const sigs: Record<string, any> = {};
+  const sigs: Record<string, any> = Object.create(null);
+  const shapeVersion = signal(0);
+  const getterVersion = signal(0);
   for (const k of Object.keys(raw)) sigs[k] = signal(raw[k]);
 
   // ---- 1.1 嵌套深响应式（兼容 0.1.x 的深代理语义） --------------------------
@@ -60,35 +62,60 @@ function createStoreInternal<S extends Record<string, any>, G extends Record<str
     if (obj === null || typeof obj !== 'object') return obj;
     const cached = wrapped.get(obj);
     if (cached) return cached.p;
+    if (!Array.isArray(obj) && !isPlainObject(obj)) return obj;
     const isArr = Array.isArray(obj);
     // 对象级版本 signal：仅数组使用（读时 track、mutator 后自增）
     const ver = isArr ? signal(0) : null;
     const p = new Proxy(obj, {
       get(target, k, recv) {
-        if (isArr && ARRAY_MUTATORS.includes(k as string)) {
+        if (typeof k !== 'string') return Reflect.get(target, k, recv);
+        if (isArr && ARRAY_MUTATORS.includes(k) && typeof (target as any)[k] === 'function') {
           return (...args: any[]) => {
-            const res = (target as any)[k as string].apply(target, args);
+            const res = (target as any)[k].apply(target, args);
             ver!.value++; // 结构变更：读过该数组的模板 effect 重跑（见上方注释）
-            broadcast([...chain, k as string]);
+            broadcast([...chain, k]);
             return res;
           };
         }
-        if (typeof k !== 'string') return Reflect.get(target, k, target);
-        // 数组任意键读取（length / 索引 / 方法名）都注册对 ver 的依赖
+        const desc = Reflect.getOwnPropertyDescriptor(target, k);
+        if (!desc) {
+          if (!isArr || k === '__proto__' || k === 'constructor' || k === 'prototype') return undefined;
+          return Reflect.get(target, k, recv);
+        }
+        // 数组任意自有键读取（length / 索引 / 方法名）都注册对 ver 的依赖
         if (isArr) ver!.value;
-        return makeReactive(Reflect.get(target, k, target), [...chain, k]);
+        // 冻结对象的数据属性必须返回原值，否则违反 Proxy invariant。
+        if (!desc.configurable && !desc.writable && 'value' in desc) return desc.value;
+        return makeReactive(Reflect.get(target, k, recv), [...chain, k]);
       },
       set(target, k, v, recv) {
-        const old = Reflect.get(target, k, target);
-        const nv = makeReactive(v, [...chain, k as string]);
-        Reflect.set(target, k, nv, target);
-        broadcast([...chain, k as string], nv, old);
+        if (typeof k !== 'string') return Reflect.set(target, k, v, recv);
+        const desc = Reflect.getOwnPropertyDescriptor(target, k);
+        if (desc && !desc.configurable && !desc.writable && 'value' in desc) {
+          return Object.is(desc.value, v);
+        }
+        const old = desc && 'value' in desc ? desc.value : Reflect.get(target, k, recv);
+        const nv = makeReactive(v, [...chain, k]);
+        if (!desc) {
+          if (!Object.isExtensible(target)) return false;
+          Object.defineProperty(target, k, { value: nv, writable: true, enumerable: true, configurable: true });
+        } else if (!Reflect.set(target, k, nv, 'value' in desc ? target : recv)) {
+          return false;
+        }
+        if (isArr) ver!.value++;
+        else getterVersion.value++;
+        broadcast([...chain, k], nv, old);
         return true;
       },
       deleteProperty(target, k) {
-        const old = Reflect.get(target, k, target);
-        Reflect.deleteProperty(target, k);
-        broadcast([...chain, k as string], undefined, old);
+        if (typeof k !== 'string') return Reflect.deleteProperty(target, k);
+        const desc = Reflect.getOwnPropertyDescriptor(target, k);
+        if (!desc) return true;
+        const old = 'value' in desc ? desc.value : Reflect.get(target, k);
+        if (!Reflect.deleteProperty(target, k)) return false;
+        if (isArr) ver!.value++;
+        else getterVersion.value++;
+        broadcast([...chain, k], undefined, old);
         return true;
       },
     });
@@ -97,26 +124,45 @@ function createStoreInternal<S extends Record<string, any>, G extends Record<str
   }
 
   const stateProxy: Record<string, any> = new Proxy({} as Record<string, any>, {
-    get(_t, k: string | symbol) { return typeof k === 'string' && sigs[k] ? makeReactive(sigs[k].value, [slotKey, k]) : undefined; },
+    get(_t, k: string | symbol) {
+      if (typeof k !== 'string') return undefined;
+      shapeVersion.value;
+      return has(sigs, k) ? makeReactive(sigs[k].value, [slotKey, k]) : undefined;
+    },
     set(_t, k: string | symbol, v) {
       if (typeof k !== 'string') return false;
-      const old = sigs[k] ? sigs[k].value : undefined;
-      if (!sigs[k]) sigs[k] = signal(v); else sigs[k].value = v;
+      const existed = has(sigs, k);
+      const old = existed ? sigs[k].value : undefined;
+      if (existed) sigs[k].value = v;
+      else {
+        sigs[k] = signal(v);
+        shapeVersion.value++;
+      }
       broadcast([slotKey, k], v, old);
       return true;
     },
-    has(_t, k) { return typeof k === 'string' && k in sigs; },
+    has(_t, k) {
+      shapeVersion.value;
+      return typeof k === 'string' && has(sigs, k);
+    },
     deleteProperty(_t, k) {
-      if (typeof k === 'string' && k in sigs) {
+      if (typeof k === 'string' && has(sigs, k)) {
         const old = sigs[k].value;
         delete sigs[k];
+        shapeVersion.value++;
         broadcast([slotKey, k], undefined, old);
         return true;
       }
       return false;
     },
-    ownKeys() { return Object.keys(sigs); },
-    getOwnPropertyDescriptor(_t, k) { return typeof k === 'string' && k in sigs ? { enumerable: true, configurable: true, value: sigs[k].value } : undefined; },
+    ownKeys() {
+      shapeVersion.value;
+      return Object.keys(sigs);
+    },
+    getOwnPropertyDescriptor(_t, k) {
+      shapeVersion.value;
+      return typeof k === 'string' && has(sigs, k) ? { enumerable: true, configurable: true, value: sigs[k].value } : undefined;
+    },
   });
 
   // ---- 2. getters（signal 依赖自动失效） --------------------------------------
@@ -124,7 +170,10 @@ function createStoreInternal<S extends Record<string, any>, G extends Record<str
   function getGetter(name: string): any {
     let c = getterCache.get(name);
     if (!c) {
-      c = signalComputed(() => (getters as any)[name](stateProxy));
+      c = signalComputed(() => {
+        getterVersion.value;
+        return (getters as any)[name](stateProxy);
+      });
       getterCache.set(name, c);
     }
     return c.value;
@@ -141,24 +190,91 @@ function createStoreInternal<S extends Record<string, any>, G extends Record<str
     compRefs.add(new WeakRef(comp));
   }
 
+  function notifyComponents() {
+    compRefs.forEach(ref => {
+      const comp = ref.deref();
+      if (!comp || comp.isDestroyed) {
+        compRefs.delete(ref);
+        if (comp) compKnown.delete(comp);
+        return;
+      }
+      // 短暂断开 DOM 不注销；重新挂载后下一次广播仍应刷新。
+      if (!comp.isConnected) return;
+      try {
+        comp.forceUpdate();
+      } catch (e) {
+        showWarn(`[compelem-store] connected component of '${id}' threw during update:`, e);
+      }
+    });
+  }
+
+  // ---- 3.1 batch：把一轮内的多次广播合并为「每条路径一条」 ---------------------
+  // 场景：一次交互要连带改十几个 state 键（选中项 + 面板回显 + 草稿同步），
+  // 订阅者会被连续唤起 N 次，且每次都 `{ ...stateProxy }` 全量快照一遍。
+  // 下游为此各自写过 `subscribeBatched` 之类的补偿包装，这里收敛进库。
+  // 合并口径：同一 path 保留**首次 oldValue + 末次 newValue**，通知顺序取首次出现序。
+  let batchDepth = 0;
+  let flushing = false;
+  let pending: Map<string, StoreMutation> | null = null;
+  const MAX_BATCH_FLUSH_ROUNDS = 100;
+
+  function deliver(mutation: StoreMutation, snapshot: Record<string, any>) {
+    const callbacks = [...listeners];
+    for (const cb of callbacks) {
+      try {
+        cb(mutation, snapshot);
+      } catch (e) {
+        showWarn(`[compelem-store] subscriber of '${id}' threw:`, e);
+      }
+    }
+  }
+
+  function flushBatch() {
+    if (flushing) return;
+    flushing = true;
+    let shouldNotify = false;
+    let rounds = 0;
+    try {
+      while (pending && pending.size > 0) {
+        if (rounds++ >= MAX_BATCH_FLUSH_ROUNDS) {
+          const dropped = pending.size;
+          pending = null;
+          showWarn(`[compelem-store] store '${id}' batch exceeded ${MAX_BATCH_FLUSH_ROUNDS} reentrant rounds; ${dropped} pending mutation(s) dropped`);
+          break;
+        }
+        shouldNotify = true;
+        const q = pending;
+        pending = null;
+        if (listeners.size === 0) continue;
+        const snapshot = { ...stateProxy };
+        q.forEach(mutation => deliver(mutation, snapshot));
+      }
+    } finally {
+      flushing = false;
+      if (shouldNotify) notifyComponents();
+    }
+  }
+
   // 所有变更都经 signal 直写：组件模板的 point effect 读到 sig.value 即建立订阅，
-  // 信号变更自动驱动对应 DOM 更新推进；此处只需通知显式 subscribe 的监听器。
-  // ⚠️ 旧签名是 `broadcast(nv, ov, chain, subNewValue, subOldValue)`，但前两个形参在
-  // 函数体内从未被读取（真正生效的是后三个），且 `version++` 无人消费 ⇒ 已收敛为
-  // `(chain, newValue, oldValue)`，避免调用方误以为前两个有语义。
+  // 信号变更自动驱动对应 DOM 更新推进；显式 connect 的组件另由 notifyComponents 刷新。
   function broadcast(chain: string[], newValue?: any, oldValue?: any) {
     const path = chain.join(".");
-    if (listeners.size > 0) {
-      const mutation: StoreMutation = { key: path, newValue, oldValue, chain };
-      const snapshot = { ...stateProxy };
-      listeners.forEach(cb => {
-        try {
-          cb(mutation, snapshot);
-        } catch (e) {
-          showWarn(`[compelem-store] subscriber of '${id}' threw:`, e);
-        }
-      });
+    if (batchDepth > 0 || flushing) {
+      if (!pending) pending = new Map();
+      const pendingKey = JSON.stringify(chain);
+      const existed = pending.get(pendingKey);
+      if (existed) {
+        existed.newValue = newValue;
+        existed.chain = chain;
+      } else {
+        pending.set(pendingKey, { key: path, newValue, oldValue, chain });
+      }
+      return;
     }
+    if (listeners.size > 0) {
+      deliver({ key: path, newValue, oldValue, chain }, { ...stateProxy });
+    }
+    notifyComponents();
   }
 
   // ---- 4. store 方法（无 $ 前缀） -------------------------------------------
@@ -170,12 +286,17 @@ function createStoreInternal<S extends Record<string, any>, G extends Record<str
         showWarn(`[compelem-store] 'patch' expects a plain object, got:`, partial);
         return;
       }
+      assertNoReservedKeys(Object.keys(partial));
       Object.keys(partial).forEach(k => {
         (stateProxy as any)[k] = (partial as any)[k];
       });
     },
     reset() {
       const fresh = options.state();
+      if (!isPlainObject(fresh)) {
+        throw new Error(`[compelem-store] store '${id}' state must be a plain object`);
+      }
+      assertNoReservedKeys(Object.keys(fresh));
       Object.keys(fresh).forEach(k => {
         (stateProxy as any)[k] = (fresh as any)[k];
       });
@@ -185,6 +306,21 @@ function createStoreInternal<S extends Record<string, any>, G extends Record<str
           delete (stateProxy as any)[k];
         }
       });
+    },
+    batch<T>(fn: () => T): T {
+      if (typeof fn !== "function") {
+        showWarn(`[compelem-store] 'batch' expects a function, got:`, fn);
+        return undefined as T;
+      }
+      batchDepth++;
+      try {
+        return fn();
+      } finally {
+        batchDepth--;
+        // 抛出也照常派发已产生的变更（不回滚写入），否则订阅者会永久错过这批状态。
+        // 嵌套时只由最外层 flush 一次。
+        if (batchDepth === 0) flushBatch();
+      }
     },
     subscribe(cb: StoreSubscriber) {
       listeners.add(cb);
@@ -201,6 +337,26 @@ function createStoreInternal<S extends Record<string, any>, G extends Record<str
     },
   };
 
+  const reservedKeys = new Set(Object.keys(methods));
+  function assertNoReservedKeys(keys: string[]) {
+    for (const k of keys) {
+      if (reservedKeys.has(k)) {
+        throw new Error(`[compelem-store] store '${id}' state key '${k}' conflicts with a store method`);
+      }
+    }
+  }
+  assertNoReservedKeys(Object.keys(raw));
+  for (const k of Object.keys(getters)) {
+    if (reservedKeys.has(k) || has(raw, k)) {
+      throw new Error(`[compelem-store] store '${id}' getter '${k}' conflicts with an existing member`);
+    }
+  }
+  for (const k of Object.keys(actions)) {
+    if (reservedKeys.has(k) || has(raw, k) || has(getters, k)) {
+      throw new Error(`[compelem-store] store '${id}' action '${k}' conflicts with an existing member`);
+    }
+  }
+
   // ---- 5. facade proxy -------------------------------------------------------
   const facade: any = new Proxy(stateProxy, {
     get(target, prop) {
@@ -216,6 +372,7 @@ function createStoreInternal<S extends Record<string, any>, G extends Record<str
       return Reflect.get(target, prop, target);
     },
     set(target, prop, value) {
+      if (typeof prop === 'string' && (has(methods, prop) || has(getters, prop) || has(actions, prop))) return false;
       return Reflect.set(target, prop, value, target);
     },
     has(target, prop) {
@@ -254,7 +411,7 @@ function createStoreInternal<S extends Record<string, any>, G extends Record<str
 /**
  * 按 id 查找已注册的 store facade（供 useStore 的字符串形式使用）
  */
-export function getStoreById(id: string): object | undefined {
+export function getStoreById(id: string): StoreFacade<Record<string, any>, {}, {}> | undefined {
   return registry.get(id);
 }
 

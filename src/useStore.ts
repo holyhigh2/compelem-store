@@ -24,8 +24,8 @@ import type { StoreFacade } from "./types";
  * @param comp  组件实例（render 中的 this）
  * @returns 解析出的 store facade（可直接读写 state、调用 actions）
  */
-export function useStore<F extends StoreFacade<any, any, any>>(store: F, comp: CompElem): F;
-export function useStore(store: string, comp: CompElem): StoreFacade<Record<string, any>, Record<string, never>, Record<string, never>>;
+export function useStore<F extends object>(store: F, comp: CompElem): F;
+export function useStore(store: string, comp: CompElem): StoreFacade<Record<string, any>, {}, {}>;
 export function useStore(storeRef: object | string, comp: CompElem): any {
   let facade: any;
   if (typeof storeRef === "string") {

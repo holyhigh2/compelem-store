@@ -1,4 +1,5 @@
 import { defineComponents } from "compelem";
+import { createStore } from "../src/index";
 import { counterStore, themeStore, todoStore } from "./stores";
 import { CounterPanel, CounterBadge, GetterOnly, ThemePanel, TodoApp } from "./components";
 
@@ -89,6 +90,41 @@ async function runSelfTest() {
     todos.remove(todos.items[len0].id);
     await wait();
     assert("todo-remove", todos.items.length === len0);
+
+    const audit = createStore({
+      id: "selftest-audit",
+      state: () => ({ obj: { x: 1 }, list: [1, 2], extra: 1, "obj.x": 0 }),
+      getters: {
+        nested: s => s.obj.x,
+        length: s => s.list.length,
+        extraValue: s => s.extra,
+      },
+    });
+    audit.obj.x = 2;
+    audit.list[0] = 9;
+    audit.list.length = 1;
+    delete (audit as any).extra;
+    assert("nested-getter-invalidation", audit.nested === 2, `nested=${audit.nested}`);
+    assert("array-shape-invalidation", audit.length === 1 && audit.list[0] === 9);
+    assert("delete-getter-invalidation", audit.extraValue === undefined);
+    try {
+      (audit as any).__proto__ = { selftestPolluted: true };
+      (audit.obj as any).__proto__ = { selftestNestedPolluted: true };
+      assert("prototype-key-safety", ({} as any).selftestPolluted === undefined
+        && ({} as any).selftestNestedPolluted === undefined
+        && (audit.obj as any).__proto__.selftestNestedPolluted === true);
+    } finally {
+      delete (Object.prototype as any).selftestPolluted;
+      delete (Object.prototype as any).selftestNestedPolluted;
+    }
+    const auditEvents: any[] = [];
+    audit.subscribe(m => auditEvents.push(m));
+    audit.batch(() => {
+      audit.obj.x = 3;
+      audit["obj.x"] = 4;
+    });
+    assert("batch-distinct-chains", auditEvents.length === 2 && auditEvents[1].newValue === 4,
+      JSON.stringify(auditEvents.map(m => ({ chain: m.chain, newValue: m.newValue }))));
 
     // subscribe
     assert("subscribe-fired", document.getElementById("sub-log")!.textContent!.includes("count"));

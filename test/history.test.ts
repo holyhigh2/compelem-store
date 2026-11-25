@@ -149,4 +149,20 @@ describe("createHistory", () => {
     expect(h.depth()).toEqual({ undo: 0, redo: 0 });
     expect(h.canUndo()).toBe(false);
   });
+
+  it("restore 抛错时保留原历史栈", () => {
+    const ctx = makeCtx();
+    const h = createHistory({
+      tracked: ["setN"],
+      snapshot: ctx.snapshot,
+      restore: () => { throw new Error("restore failed"); },
+    });
+    const a = h.wrap({ setN(n: number) { ctx.set(n); } });
+    a.setN(1);
+    expect(() => h.undo()).toThrow("restore failed");
+    expect(ctx.value).toBe(1);
+    expect(h.depth()).toEqual({ undo: 1, redo: 0 });
+    expect(h.canUndo()).toBe(true);
+    expect(h.canRedo()).toBe(false);
+  });
 });

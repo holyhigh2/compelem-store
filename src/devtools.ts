@@ -4,7 +4,7 @@
  * 设计约束：
  * - **零依赖、零副作用**：未安装 devtools 时这里只是往 globalThis 上挂一个对象，
  *   不注册任何监听、不持有额外引用；
- * - **懒求值**：provider 只保存 facade 引用，读取时机完全由 devtools 决定；
+ * - **懒求值**：provider 只保存 facade 的 WeakRef，读取时机完全由 devtools 决定；
  * - **不改变既有语义**：mutation 订阅复用公开的 `facade.subscribe()`，而 `broadcast`
  *   内部本来就用 `listeners.size > 0` 做闸门（store.ts），因此面板未打开时零开销。
  *
@@ -38,11 +38,38 @@ export interface StoreDevtoolsProvider {
   subscribe(id: string, cb: (mutation: any, snapshot: any) => void): () => void
 }
 
+interface StoreDevtoolsRecord {
+  id: string
+  facadeRef: WeakRef<any>
+  getters: string[]
+  actions: string[]
+  slotKey: string
+}
+
 /**
- * 单例注册表：模块级 Map 而非 globalThis，保证多入口（ESM / UMD）下也只有一个。
+ * 模块级注册表；provider 本身挂在 globalThis，供 devtools 统一探测。
+ * 元信息保持强引用，只有 facade 使用 WeakRef；createStore 的临时实例可被 GC，
+ * 但只要 facade 仍存活，devtools 登记就不会随机消失。
  * 注意 devtools 只通过 provider 的三个方法访问它，不直接暴露 Map。
  */
-const entries = new Map<string, StoreDevtoolsEntry>()
+const entries = new Map<string, StoreDevtoolsRecord>()
+
+function pruneEntries() {
+  entries.forEach((record, id) => {
+    if (!record.facadeRef.deref()) entries.delete(id)
+  })
+}
+
+function toEntry(record: StoreDevtoolsRecord): StoreDevtoolsEntry | undefined {
+  const facade = record.facadeRef.deref()
+  return facade ? {
+    id: record.id,
+    facade,
+    getters: record.getters,
+    actions: record.actions,
+    slotKey: record.slotKey,
+  } : undefined
+}
 
 /**
  * 取得（必要时创建）provider 并挂到 globalThis。
@@ -53,11 +80,17 @@ function provider(): StoreDevtoolsProvider {
   const eco = (g[ECOSYSTEM_KEY] = g[ECOSYSTEM_KEY] || {})
   if (!eco.store) {
     const p: StoreDevtoolsProvider = {
-      list: () => Array.from(entries.keys()),
-      entry: (id: string) => entries.get(id),
+      list: () => {
+        pruneEntries()
+        return Array.from(entries.keys())
+      },
+      entry: (id: string) => {
+        const record = entries.get(id)
+        return record ? toEntry(record) : undefined
+      },
       subscribe: (id: string, cb: (mutation: any, snapshot: any) => void) => {
-        const e = entries.get(id)
-        return e ? e.facade.subscribe(cb) : () => { /* noop */ }
+        const facade = entries.get(id)?.facadeRef.deref()
+        return facade ? facade.subscribe(cb) : () => { /* noop */ }
       },
     }
     Object.defineProperty(eco, 'store', {
@@ -72,7 +105,13 @@ function provider(): StoreDevtoolsProvider {
 
 /** 由 defineStore 内部调用：登记一个新创建的 store */
 export function registerStoreDevtools(entry: StoreDevtoolsEntry): void {
-  entries.set(entry.id, entry)
+  entries.set(entry.id, {
+    id: entry.id,
+    facadeRef: new WeakRef(entry.facade),
+    getters: entry.getters,
+    actions: entry.actions,
+    slotKey: entry.slotKey,
+  })
   provider()
 }
 
@@ -88,7 +127,13 @@ export function clearStoreDevtools(): void {
 
 /** 供控制台 / 测试直接读取全部登记项 */
 export function getStoreDevtoolsEntries(): StoreDevtoolsEntry[] {
-  return Array.from(entries.values())
+  pruneEntries()
+  const live: StoreDevtoolsEntry[] = []
+  entries.forEach(record => {
+    const entry = toEntry(record)
+    if (entry) live.push(entry)
+  })
+  return live
 }
 
 /**

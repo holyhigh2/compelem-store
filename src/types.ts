@@ -26,7 +26,7 @@ export interface DefineStoreOptions<S extends Record<string, any>, G, A> {
   /** 计算属性，参数为响应式 state；任一 state 变更后惰性重算 */
   getters?: G & Record<string, (state: S) => any>;
   /** 修改 state 的方法，this 为 store facade（可直接读写 state 属性） */
-  actions?: A & Record<string, (...args: any[]) => any> & ThisType<any>;
+  actions?: A & Record<string, (...args: any[]) => any> & ThisType<StoreFacade<S, GetterValues<G>, Record<string, any>>>;
 }
 
 /** getters 求值后的属性视图 */
@@ -44,6 +44,20 @@ export type StoreFacade<S extends Record<string, any>, G, A> = S & GetterValues<
   patch(partial: Partial<S>): void;
   /** 用 state() 工厂重新生成的初始值覆盖当前 state（多余键会被移除） */
   reset(): void;
+  /**
+   * 批量写：`fn` 执行期间产生的所有变更会合并成「每条路径一条通知」，
+   * 在 `fn` 返回（或抛出）时统一派发给订阅者，且全批只取一次 state 快照。
+   *
+   * - 同一路径多次写：保留**首次 oldValue + 末次 newValue**
+   * - 嵌套 `batch`：只在外层结束时分发一次
+   * - 监听器重入写入按顺序排队；超过 100 轮会告警并丢弃剩余通知，避免同步死循环
+   * - 合并的是**订阅通知**，不是 signal 写入 —— 模板 effect 仍逐次失效，
+   *   由 compelem 自己的调度合并渲染
+   * - 仅支持同步回调；返回 Promise 时，`await` 之后的写入不属于本批
+   *
+   * @returns `fn` 的返回值
+   */
+  batch<T>(fn: () => T): T;
   /** 订阅任意变更（与组件渲染无关的手动监听），返回退订函数 */
   subscribe(cb: StoreSubscriber): () => void;
   /** 手动把一个组件实例接入订阅（等价于在 render 中调用 useStore(store, this)） */

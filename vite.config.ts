@@ -23,17 +23,11 @@ export default defineConfig({
     sourcemap: true,
     lib: {
       entry: resolve(__dirname, 'src/index.ts'),
-      name: 'CompelemStore',
-      fileName: 'index',
+      formats: ['es', 'cjs'],
+      fileName: format => format === 'es' ? 'index.js' : 'index.umd.cjs',
     },
     rollupOptions: {
       external: ['compelem', 'myfx'],
-      output: {
-        globals: {
-          compelem: 'CompElem',
-          myfx: 'myfx',
-        },
-      },
     },
   },
   test: {

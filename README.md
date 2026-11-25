@@ -66,6 +66,11 @@ const unsubscribe = store.subscribe((mutation, snapshot) => {
   console.log(mutation.key, mutation.oldValue, '→', mutation.newValue);
 });
 store.patch({ count: 100 });
+
+store.batch(() => {
+  store.count += 1;
+  store.step = 2;
+}); // 同一路径合并为一条订阅通知；仅支持同步回调
 ```
 
 ## API
@@ -73,12 +78,15 @@ store.patch({ count: 100 });
 | API | 说明 |
 |---|---|
 | `defineStore(options)` | 完整 store（state/getters/actions），同 id 单例；直接返回 facade 本体（轻量场景只给 state 即可） |
+| `createStore(options)` | 非单例工厂，用于同一逻辑创建互相隔离的实例 |
+| `createHistory(options)` | 快照式撤销/重做控制器，支持同步 batch 与异步 batchAsync |
 | `getStoreById(id)` | 按 id 取已注册 facade（undefined 表示未定义） |
 | `disposeStore(id)` / `resetStores()` | 从注册表摘除 / 清空全部 store（测试隔离用） |
 | `useStore(store, comp)` | 显式接入订阅（render 内读取已自动订阅，此形式用于 render 之外）；store 参数支持 facade / id 字符串，返回 facade |
 | `store.state` | 响应式 state 代理 |
 | `store.patch(partial)` | 批量更新 |
 | `store.reset()` | 用 state() 工厂重新初始化（多余键移除） |
+| `store.batch(fn)` | 合并同步写入的订阅通知，每条 chain 一条 |
 | `store.subscribe(cb)` | 手动监听，返回退订函数 |
 | `store.connect(comp)` / `disconnect(comp)` | 手动接入/解除组件订阅 |
 
@@ -88,7 +96,7 @@ store.patch({ count: 100 });
 npm install
 npm run dev          # demo（内置 ?selftest=1 自动化自检）
 npm run typecheck    # tsc --noEmit
-npm run build        # 库构建（ESM + UMD + d.ts + sourcemap）
+npm run build        # 库构建（ESM + CJS + d.ts + sourcemap）
 ```
 
 ## License
